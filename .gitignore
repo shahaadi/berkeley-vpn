@@ -1,0 +1,6 @@
+# build artifacts
+gp-capture
+*.o
+*.dSYM
+.DS_Store
+chrome-profile/
