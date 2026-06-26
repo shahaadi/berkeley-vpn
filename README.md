@@ -52,6 +52,14 @@ berkeley-vpn restricted
 berkeley-vpn --help
 ```
 
+### Manage your session / install
+
+```sh
+berkeley-vpn login       # open the CalNet login to refresh your session (no connect)
+berkeley-vpn logout      # clear the saved CalNet session (forces a fresh login)
+berkeley-vpn uninstall   # remove berkeley-vpn (asks to confirm first)
+```
+
 Running it prints a banner showing exactly what it's doing and how to switch:
 
 ```
