@@ -31,7 +31,8 @@ One line:
 curl -fsSL https://raw.githubusercontent.com/shahaadi/berkeley-vpn/main/install.sh | bash
 ```
 
-This downloads the two scripts and links a `berkeley-vpn` command into your PATH.
+This downloads the two scripts and links a `berkeley-vpn` command (and tells you
+if its directory isn't already on your `PATH`).
 
 Or manually:
 
