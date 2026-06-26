@@ -351,6 +351,7 @@ final class App: NSObject, NSApplicationDelegate, WKNavigationDelegate {
     var webView: WKWebView!
     var done = false
     var captured = false
+    var loginOnly = false   // --login: just establish the SSO session, don't capture
 
     func applicationDidFinishLaunching(_ note: Notification) {
         if let w = loginTimeoutWarning { errlog("note: \(w)") }
@@ -406,6 +407,15 @@ final class App: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         guard host == gateway || host == "vpn.berkeley.edu"
               || host.hasSuffix(".vpn.berkeley.edu") else { return }
         done = true
+        // --login: the CalNet SSO session is now stored in the persistent data
+        // store; exit without capturing a token or connecting. The brief delay lets
+        // WebKit flush the cookies to disk first.
+        if loginOnly {
+            errlog("CalNet login complete — session saved (no VPN connection made).")
+            window.orderOut(nil)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { exit(0) }
+            return
+        }
         errlog("Login detected — capturing token…")
         window.orderOut(nil)   // hide the finished login window during capture
 
@@ -505,13 +515,29 @@ func selftest() -> Never {
     exit(pass ? 0 : 1)
 }
 
+/// Clear the persistent WebKit data store (the saved CalNet SSO session) and exit.
+func logout() -> Never {
+    let store = WKWebsiteDataStore.default()
+    store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
+                     modifiedSince: .distantPast) {
+        print("Logged out — cleared the saved CalNet session.")
+        exit(0)
+    }
+    // removeData's completion runs on the main run loop; spin it (bounded) so we
+    // don't deadlock waiting on it.
+    RunLoop.main.run(until: Date().addingTimeInterval(10))
+    die("ERROR: logout timed out")
+}
+
 func usageText() -> String {
     """
-    Usage: swift capture.swift [-h | --help | --probe | --selftest]
-      (no args)    open the WebKit CalNet+Duo login and print the captured token JSON
-      --probe      one live prelogin request to the gateway (no login)
-      --selftest   offline parser self-checks
-      -h, --help   show this help
+    Usage: swift capture.swift [-h | --help | --probe | --selftest | --logout | --login]
+      (no args)     open the WebKit CalNet+Duo login and print the captured token JSON
+      --login       open the login window to establish the CalNet session, then exit
+      --logout      clear the saved CalNet session (forces a fresh login next time)
+      --probe       one live prelogin request to the gateway (no login)
+      --selftest    offline parser self-checks
+      -h, --help    show this help
     Env: GP_GATEWAY=<host> (current: \(gateway)), GP_TIMEOUT=<seconds> (current: \(Int(loginTimeout)))
     """
 }
@@ -519,13 +545,15 @@ func usageText() -> String {
 // MARK: - Entry
 
 let cliArgs = Array(CommandLine.arguments.dropFirst())
-let knownFlags: Set<String> = ["-h", "--help", "--probe", "--selftest"]
+let knownFlags: Set<String> = ["-h", "--help", "--probe", "--selftest", "--logout", "--login"]
 // Help wins over everything (matches connect.sh), then reject unknown args.
 if cliArgs.contains("-h") || cliArgs.contains("--help") { print(usageText()); exit(0) }
 let unknownArgs = cliArgs.filter { !knownFlags.contains($0) }
 if !unknownArgs.isEmpty {
     errlog("unknown argument(s): \(unknownArgs.joined(separator: " "))"); errlog(usageText()); exit(2)
 }
+if cliArgs.contains("--logout") { logout() }   // clears the data store; no window/gateway
+let loginOnly = cliArgs.contains("--login")
 let modeFlags = cliArgs.filter { $0 == "--probe" || $0 == "--selftest" }
 // Reject only a genuine conflict (two DIFFERENT modes); a harmless repeat of the
 // same flag (e.g. `--probe --probe`) is idempotent and allowed.
