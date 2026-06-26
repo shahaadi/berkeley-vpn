@@ -6,6 +6,8 @@
 #
 set -euo pipefail
 
+CMD="$(basename "${BASH_SOURCE[0]:-$0}")"   # how the user invoked us (e.g. berkeley-vpn)
+
 usage() {
     cat <<'EOF'
 Berkeley VPN — connect via openconnect + GlobalProtect (no GlobalProtect app needed).
@@ -55,14 +57,22 @@ fi
 GP_GATEWAY="$GW"; export GP_GATEWAY
 if [[ -n "${GP_TIMEOUT:-}" ]]; then export GP_TIMEOUT; fi
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# Resolve our own directory, following symlinks, so an installed `berkeley-vpn`
+# symlink in PATH still finds capture.swift next to the real connect.sh.
+SOURCE="${BASH_SOURCE[0]:-$0}"
+while [ -L "$SOURCE" ]; do
+    DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+HERE="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 
 # --- Startup banner (prints what it's doing and how to change it) -------------
 echo "=================================================================="
 echo "  Berkeley VPN"
 echo "    tunnel : $DESC"
 echo "    gateway: $GP_GATEWAY"
-echo "    switch : connect.sh [split | full | restricted]   (-h for help)"
+echo "    switch : $CMD [split | full | restricted]   ($CMD -h for help)"
 echo "=================================================================="
 
 # --- Pre-flight: fail early (before opening the login window) ------------------
