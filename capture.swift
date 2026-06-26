@@ -352,6 +352,14 @@ final class App: NSObject, NSApplicationDelegate, WKNavigationDelegate {
     func applicationDidFinishLaunching(_ note: Notification) {
         if let w = loginTimeoutWarning { errlog("note: \(w)") }
         let cfg = WKWebViewConfiguration()
+        // Note on autofill/passkeys: neither works in this window, by design of the
+        // platform. macOS WKWebView has no web-form password AutoFill surface (that
+        // path is iOS-only), and passkeys/WebAuthn require an associated-domains
+        // entitlement that only berkeley.edu/duosecurity.com could grant. An
+        // ASWebAuthenticationSession would unlock both, but it sandboxes its cookies
+        // and this tool must read the SSO cookie jar to replay the SAML flow. So you
+        // type your CalNet password and approve Duo by push/passcode; the persistent
+        // data store below means re-login is rare.
         cfg.websiteDataStore = .default()   // persistent -> reuse SSO next time
         webView = WKWebView(frame: NSRect(x: 0, y: 0, width: windowWidth, height: windowHeight),
                             configuration: cfg)
