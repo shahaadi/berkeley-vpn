@@ -21,7 +21,7 @@ Tunnels:
                the VPN; the rest of your internet uses your normal connection.
   full         Full Tunnel — ALL of your internet traffic goes through the VPN
                (use this for licensed library / journal access).
-  restricted   Restricted Tunnel.
+  restricted   Restricted Tunnel — a limited subset of campus resources.
 
 Examples:
   ./connect.sh             # split tunnel (default)
@@ -43,15 +43,18 @@ if [[ $# -gt 1 ]]; then
     echo "!! Too many arguments." >&2; usage >&2; exit 2
 fi
 
-TUNNEL="${1:-split}"
+# `${1-split}` (no colon): unset -> split, but an explicitly-passed empty arg
+# falls through to the error case rather than silently defaulting.
+TUNNEL="${1-split}"
 case "$TUNNEL" in
     split)      GW="campus-split.vpn.berkeley.edu"; DESC="Split Tunnel — only campus traffic goes through the VPN" ;;
     full)       GW="campus.vpn.berkeley.edu";       DESC="Full Tunnel — ALL traffic goes through the VPN" ;;
-    restricted) GW="restricted.vpn.berkeley.edu";   DESC="Restricted Tunnel" ;;
+    restricted) GW="restricted.vpn.berkeley.edu";   DESC="Restricted Tunnel — limited campus resources" ;;
     *) echo "!! Unknown tunnel '$TUNNEL' (use: split | full | restricted)." >&2; usage >&2; exit 2 ;;
 esac
 # An explicit GP_GATEWAY env var overrides the friendly choice (advanced/custom use).
 if [[ -n "${GP_GATEWAY:-}" ]]; then
+    [[ $# -ge 1 ]] && echo "note: GP_GATEWAY is set — using it instead of the '$TUNNEL' tunnel." >&2
     GW="$GP_GATEWAY"; DESC="custom gateway (GP_GATEWAY)"
 fi
 GP_GATEWAY="$GW"; export GP_GATEWAY
@@ -81,8 +84,11 @@ echo "=================================================================="
 if ! { : </dev/tty; } 2>/dev/null; then
     echo "!! Run from a terminal — sudo needs a tty for your password." >&2; exit 1
 fi
-command -v swift >/dev/null 2>&1 || {
-    echo "!! Swift toolchain not found. Install it with: xcode-select --install" >&2
+# Check for the Command Line Tools via xcode-select, NOT `command -v swift`:
+# /usr/bin/swift is a stub that exists even without the CLT (and invoking it would
+# pop the GUI installer). xcode-select -p succeeds only when swift actually works.
+xcode-select -p >/dev/null 2>&1 || {
+    echo "!! Xcode Command Line Tools not found (needed for swift). Install: xcode-select --install" >&2
     exit 1
 }
 command -v openconnect >/dev/null 2>&1 || {

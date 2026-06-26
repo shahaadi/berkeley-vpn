@@ -176,8 +176,11 @@ func firstMatch(_ pattern: String, in text: String) -> String? {
 /// the two can never be confused on decode. (Real SAML values carry no spaces;
 /// this stays spec-correct regardless and is exercised by the self-test.)
 func formEncode(_ s: String) -> String {
-    var cs = CharacterSet.alphanumerics; cs.insert(charactersIn: "-._~")
-    let pct = s.addingPercentEncoding(withAllowedCharacters: cs) ?? s
+    // RFC 3986 unreserved set, ASCII only (CharacterSet.alphanumerics is
+    // Unicode-wide and would pass non-ASCII letters/digits through unencoded).
+    let unreserved = CharacterSet(charactersIn:
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+    let pct = s.addingPercentEncoding(withAllowedCharacters: unreserved) ?? s
     return pct.replacingOccurrences(of: "%20", with: "+")
 }
 
@@ -496,6 +499,8 @@ func selftest() -> Never {
     check("formEncode space -> +", formEncode("a b c"), "a+b+c")
     check("formEncode reserved +/= percent-encoded", formEncode("a+b/c=d"), "a%2Bb%2Fc%3Dd")
     check("formEncode unreserved passthrough", formEncode("Xy9-._~"), "Xy9-._~")
+    // Exercise firstMatch's on-the-fly fallback (a pattern not in compiledPatterns).
+    check("firstMatch ad-hoc pattern (fallback)", firstMatch("z(.)z", in: "zXz"), "X")
     print(pass ? "SELFTEST PASS" : "SELFTEST FAIL")
     exit(pass ? 0 : 1)
 }
