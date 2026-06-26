@@ -81,8 +81,11 @@ do_uninstall() {
     fi
     # Remove the command symlink (only if it really is a symlink).
     if [ -n "$link" ] && [ -L "$link" ]; then rm -f "$link" && echo "Removed $link"; fi
-    # Remove the install dir (guarded: must look like a berkeley-vpn dir).
-    if [ -n "$selfdir" ] && [ -f "$selfdir/capture.swift" ]; then
+    # Remove the install dir (guarded: must look like a berkeley-vpn dir). A git
+    # checkout is left in place — that's a source clone, not an install.
+    if [ -d "$selfdir/.git" ]; then
+        echo "Left $selfdir in place (it's a git checkout). Delete it yourself if you want it gone."
+    elif [ -n "$selfdir" ] && [ -f "$selfdir/capture.swift" ]; then
         rm -rf "$selfdir" && echo "Removed $selfdir"
     fi
     echo "Uninstalled. (openconnect was left installed — 'brew uninstall openconnect' if you don't need it.)"
