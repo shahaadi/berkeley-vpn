@@ -54,13 +54,13 @@ berkeley-vpn              # Split Tunnel (default) — only campus traffic via t
 berkeley-vpn split        # the same, written out explicitly
 berkeley-vpn full        # Full Tunnel — ALL traffic via the VPN (library/journal access)
 berkeley-vpn restricted  # optional add-on — asks to install on first use (see below)
-berkeley-vpn --help
+berkeley-vpn help
 ```
 
 ### Manage your session / install
 
 ```sh
-berkeley-vpn version     # print the installed version (also: berkeley-vpn -v)
+berkeley-vpn version     # print the installed version
 berkeley-vpn set full    # make 'full' your default, so plain `berkeley-vpn` uses it
 berkeley-vpn set         # show the current default (split unless you've changed it)
 berkeley-vpn login       # open the CalNet login to refresh your session (no connect)
@@ -82,7 +82,7 @@ Running it prints a banner showing exactly what it's doing and how to switch:
   Berkeley VPN
     tunnel : Split Tunnel — only campus traffic goes through the VPN
     gateway: campus-split.vpn.berkeley.edu
-    switch : berkeley-vpn [split | full | restricted]   (berkeley-vpn -h for help)
+    switch : berkeley-vpn [split | full | restricted]   (run 'berkeley-vpn help')
 ==================================================================
 ```
 

@@ -65,7 +65,7 @@ command -v openconnect >/dev/null 2>&1 || warn "openconnect is not installed. In
 xcode-select -p >/dev/null 2>&1 || warn "Xcode Command Line Tools not found (needed for swift). Install:  xcode-select --install"
 
 say ""
-say "   Usage:  berkeley-vpn [split | full | restricted]      (-h for help)"
+say "   Usage:  berkeley-vpn [split | full | restricted]      (run 'berkeley-vpn help')"
 say "     e.g.  berkeley-vpn          # split tunnel (default)"
 say "           berkeley-vpn full     # full tunnel (all traffic)"
-say "   More:   berkeley-vpn login | logout | update | uninstall"
+say "   More:   berkeley-vpn set | login | logout | update | version | uninstall | help"

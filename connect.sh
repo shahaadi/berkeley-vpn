@@ -20,8 +20,9 @@ Usage:
   $CMD login                         refresh the CalNet session (no connect)
   $CMD logout                        clear the saved CalNet session
   $CMD update                        update to the latest version (if newer)
-  $CMD version                       print the installed version (also -v)
+  $CMD version                       print the installed version
   $CMD uninstall                     remove berkeley-vpn (asks to confirm)
+  $CMD help                          show this help
 
 Tunnels:
   split        Split Tunnel (DEFAULT) — only campus/Berkeley traffic goes through
@@ -262,13 +263,8 @@ do_set() {
     exit 0
 }
 
-# --- Parse the argument: help, a subcommand, or a tunnel name -----------------
-for a in "$@"; do
-    case "$a" in
-        -h|--help)    usage; exit 0 ;;
-        -v|--version) print_version; exit 0 ;;
-    esac
-done
+# --- Parse the argument: a command (a bare word) or a tunnel name -------------
+# Every command is a plain word (berkeley-vpn <command>) — no -x/--x flag forms.
 # `set` takes its own argument, so handle it before the single-argument rules.
 if [ "${1-}" = "set" ]; then
     [ $# -le 2 ] || { echo "!! Usage: $CMD set [split|full|restricted]" >&2; exit 2; }
@@ -284,6 +280,7 @@ if [ $# -eq 0 ]; then ACTION="$(load_default_tunnel)"; else ACTION="$1"; fi
 
 # Subcommands that don't bring up the VPN:
 case "$ACTION" in
+    help)      usage; exit 0 ;;
     version)   print_version; exit 0 ;;
     login)     require_swift; echo ">> Opening CalNet login to refresh your session (no VPN connection)…"
                exec swift "$HERE/capture.swift" --login ;;
@@ -305,8 +302,9 @@ case "$ACTION" in
                 GW="${RVPN_GATEWAY:-}"
                 [ -n "$GW" ] || { echo "!! restricted helper is missing its gateway — reinstall it (berkeley-vpn uninstall, then 'berkeley-vpn restricted')." >&2; exit 1; }
                 DESC="Restricted Tunnel — high-security (P4) access" ;;
-    *) echo "!! Unknown command/tunnel '$ACTION'." >&2
-       echo "   Use: split | full | restricted | login | logout | update | uninstall" >&2; usage >&2; exit 2 ;;
+    *) echo "!! Unknown command '$ACTION'." >&2
+       echo "   Commands: split | full | restricted | set | login | logout | update | version | uninstall | help" >&2
+       usage >&2; exit 2 ;;
 esac
 # An explicit GP_GATEWAY env var overrides the friendly choice (advanced/custom use).
 if [[ -n "${GP_GATEWAY:-}" ]]; then
@@ -321,7 +319,7 @@ echo "=================================================================="
 echo "  Berkeley VPN"
 echo "    tunnel : $DESC"
 echo "    gateway: $GP_GATEWAY"
-echo "    switch : $CMD [split | full | restricted]   ($CMD -h for help)"
+echo "    switch : $CMD [split | full | restricted]   (run '$CMD help')"
 if [ $# -eq 0 ] && [ -n "$(saved_default)" ]; then
     echo "    default: your saved default ($ACTION) — change with '$CMD set …'"
 fi
