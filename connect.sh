@@ -15,7 +15,8 @@ Berkeley VPN — connect via openconnect + GlobalProtect (no GlobalProtect app n
 Opens a WebKit CalNet + Duo login, captures the auth token, and starts the tunnel.
 
 Usage:
-  $CMD [split | full | restricted]   connect (default: split)
+  $CMD [split | full | restricted]   connect (default: split, or your saved default)
+  $CMD set [split|full|restricted]   set the default tunnel (no arg shows it)
   $CMD login                         refresh the CalNet session (no connect)
   $CMD logout                        clear the saved CalNet session
   $CMD update                        update berkeley-vpn to the latest version
@@ -57,6 +58,11 @@ HERE="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 RVPN_HELPER="$HERE/restricted.sh"
 RVPN_HELPER_URL="https://raw.githubusercontent.com/shahaadi/berkeley-vpn/main/restricted.sh"
 
+# Your saved default tunnel, so `berkeley-vpn` with no argument uses your choice
+# (set via `berkeley-vpn set …`) instead of the built-in split default.
+CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME:-${TMPDIR:-/tmp}}/Library/Application Support}/berkeley-vpn"
+DEFAULT_FILE="$CONFIG_DIR/default-tunnel"
+
 # Require the Command Line Tools (xcode-select, NOT `command -v swift`: /usr/bin/swift
 # is a stub that exists even without the CLT and would pop the GUI installer).
 require_swift() {
@@ -94,6 +100,9 @@ do_uninstall() {
     if xcode-select -p >/dev/null 2>&1 && [ -f "$selfdir/capture.swift" ]; then
         swift "$selfdir/capture.swift" --logout 2>/dev/null || true
     fi
+    # Remove the saved default tunnel (and its dir, if now empty).
+    rm -f "$DEFAULT_FILE" 2>/dev/null || true
+    rmdir "$CONFIG_DIR" 2>/dev/null || true
     # Remove the command symlink (only if it really is a symlink).
     if [ -n "$link" ] && [ -L "$link" ]; then rm -f "$link" && echo "Removed $link"; fi
     # Remove our files. A git checkout is left in place (it's a source clone). We
@@ -190,16 +199,52 @@ do_update() {
     exit 1
 }
 
+# Echo the saved default tunnel only if the file holds a valid one (else nothing).
+# `|| true` (not `|| d=""`) so a final line without a trailing newline still counts.
+saved_default() {
+    local d=""
+    if [ -f "$DEFAULT_FILE" ]; then IFS= read -r d <"$DEFAULT_FILE" 2>/dev/null || true; fi
+    case "$d" in split|full|restricted) printf '%s' "$d" ;; esac
+}
+
+# The tunnel to use when no argument is given: the saved default, or split.
+load_default_tunnel() { local s; s="$(saved_default)"; printf '%s' "${s:-split}"; }
+
+# `berkeley-vpn set [split|full|restricted]` — persist the default; no arg shows it.
+do_set() {
+    local choice="${1-}"
+    if [ -z "$choice" ]; then
+        echo "Default tunnel: $(load_default_tunnel)   (change it with: $CMD set [split|full|restricted])"
+        exit 0
+    fi
+    case "$choice" in
+        split|full|restricted) ;;
+        *) echo "!! Unknown tunnel '$choice'. Use: split | full | restricted" >&2; exit 2 ;;
+    esac
+    mkdir -p "$CONFIG_DIR" || { echo "!! Could not create $CONFIG_DIR" >&2; exit 1; }
+    rm -f "$DEFAULT_FILE" 2>/dev/null || true   # fresh file, don't write through a symlink
+    printf '%s\n' "$choice" >"$DEFAULT_FILE" || { echo "!! Could not save the default tunnel." >&2; exit 1; }
+    echo "Default tunnel set to '$choice' — running '$CMD' with no argument will now use it."
+    [ "$choice" = restricted ] && echo "(restricted is an opt-in add-on; the first connect will ask to install its helper.)"
+    exit 0
+}
+
 # --- Parse the argument: help, a subcommand, or a tunnel name -----------------
 for a in "$@"; do
     case "$a" in -h|--help) usage; exit 0 ;; esac
 done
+# `set` takes its own argument, so handle it before the single-argument rules.
+if [ "${1-}" = "set" ]; then
+    [ $# -le 2 ] || { echo "!! Usage: $CMD set [split|full|restricted]" >&2; exit 2; }
+    do_set "${2-}"
+fi
 if [[ $# -gt 1 ]]; then
     echo "!! Too many arguments." >&2; usage >&2; exit 2
 fi
 
-# `${1-split}` (no colon): unset -> split; an explicitly-passed empty arg errors.
-ACTION="${1-split}"
+# No argument -> your saved default (or split). An explicit (even empty) arg is
+# used as-is, so an empty string still falls through to the unknown-tunnel error.
+if [ $# -eq 0 ]; then ACTION="$(load_default_tunnel)"; else ACTION="$1"; fi
 
 # Subcommands that don't bring up the VPN:
 case "$ACTION" in
@@ -240,6 +285,9 @@ echo "  Berkeley VPN"
 echo "    tunnel : $DESC"
 echo "    gateway: $GP_GATEWAY"
 echo "    switch : $CMD [split | full | restricted]   ($CMD -h for help)"
+if [ $# -eq 0 ] && [ -n "$(saved_default)" ]; then
+    echo "    default: your saved default ($ACTION) — change with '$CMD set …'"
+fi
 echo "=================================================================="
 
 # --- Pre-flight: fail early (before opening the login window) ------------------

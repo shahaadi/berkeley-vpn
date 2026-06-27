@@ -4,15 +4,16 @@ A tiny **macOS CLI wrapper around [openconnect](https://www.infradead.org/openco
 for connecting to the **UC Berkeley VPN** (`vpn.berkeley.edu`) — without installing
 Palo Alto's GlobalProtect app.
 
-Berkeley's VPN is GlobalProtect with CalNet + Duo (SAML) login. `openconnect` can
-speak GlobalProtect, but the CalNet/Duo SAML handshake is the fiddly part. This
+Berkeley's VPN is GlobalProtect with CalNet + Duo login. `openconnect` can
+speak GlobalProtect, but the CalNet/Duo login handshake is the fiddly part. This
 tool does just that handshake in a small WebKit login window, hands the resulting
 token to `openconnect`, and connects — with simple **split / full / restricted**
 tunnel options right from the command line.
 
-It's deliberately lightweight: two small files (`connect.sh` + `capture.swift`),
-no app to install, nothing running in the background. It's basically a thin,
-convenient layer on top of `openconnect`.
+It's deliberately lightweight: the core is two small files (`connect.sh` +
+`capture.swift`) — no app to install, nothing running in the background. (The
+restricted tunnel adds one optional helper, downloaded only if you ask for it.)
+It's basically a thin, convenient layer on top of `openconnect`.
 
 ## Requirements
 
@@ -50,8 +51,8 @@ cd berkeley-vpn
 
 ```sh
 berkeley-vpn              # Split Tunnel (default) — only campus traffic via the VPN
+berkeley-vpn split        # the same, written out explicitly
 berkeley-vpn full        # Full Tunnel — ALL traffic via the VPN (library/journal access)
-berkeley-vpn split
 berkeley-vpn restricted  # optional add-on — asks to install on first use (see below)
 berkeley-vpn --help
 ```
@@ -59,11 +60,17 @@ berkeley-vpn --help
 ### Manage your session / install
 
 ```sh
+berkeley-vpn set full    # make 'full' your default, so plain `berkeley-vpn` uses it
+berkeley-vpn set         # show the current default (split unless you've changed it)
 berkeley-vpn login       # open the CalNet login to refresh your session (no connect)
 berkeley-vpn logout      # clear the saved CalNet session (forces a fresh login)
 berkeley-vpn update      # update berkeley-vpn to the latest version from the repo
 berkeley-vpn uninstall   # remove berkeley-vpn (asks to confirm first)
 ```
+
+`set` saves your choice to `~/Library/Application Support/berkeley-vpn/` so running
+`berkeley-vpn` with no argument uses it; pass a tunnel explicitly (e.g. `berkeley-vpn
+split`) to override it for one run.
 
 Running it prints a banner showing exactly what it's doing and how to switch:
 
@@ -86,7 +93,13 @@ Press **Ctrl-C** in the terminal to disconnect.
 |---|---|---|
 | `split` *(default)* | `campus-split.vpn.berkeley.edu` | Only campus/Berkeley traffic |
 | `full` | `campus.vpn.berkeley.edu` | All of your internet traffic (use for licensed library/journal access) |
-| `restricted` *(opt-in)* | `restricted.vpn.berkeley.edu` | High-security (P4) access — see below |
+| `restricted` *(opt-in)* | `restricted.vpn.berkeley.edu` | Berkeley's most-sensitive data tier ("P4") — see below |
+
+> **Not sure which to pick?** Use **`split`** (the default) — it's faster and leaves
+> your everyday traffic alone. Choose **`full`** only when you need off-campus access
+> to licensed resources (library databases, journals, software) and `split` isn't
+> routing them. Both are equally secure for campus access; they differ only in *how
+> much* of your traffic goes through the VPN.
 
 #### Restricted tunnel (optional add-on)
 
@@ -118,10 +131,9 @@ installed, `restricted` works like the other tunnels. Remove it with
 
 Your password never touches this tool — you type it into the CalNet window and Duo
 approves. To skip re-login on every connect, your CalNet **session cookies** are
-saved in your **login Keychain** (encrypted at rest, like Chrome stores its cookie
-key) and replayed headlessly until the session expires. Clear them anytime with
-`berkeley-vpn logout`. Your CalNet password is never handled by this tool, and the
-VPN token is short-lived — handed straight to `openconnect`, not persisted. Nothing
+saved in your **login Keychain** (encrypted at rest) and replayed headlessly until
+the session expires; clear them anytime with `berkeley-vpn logout`. The VPN token
+itself is short-lived — handed straight to `openconnect`, never persisted. Nothing
 runs in the background.
 
 > **Autofill / passkeys:** the window can't use macOS's *built-in* saved-password
@@ -140,7 +152,13 @@ runs in the background.
   terminal; just re-run.
 - **`Run from a terminal …`** → run it in a real terminal (it needs a tty for the
   `sudo` password prompt), not piped/automated.
-- Some resources may note a missing HIP report; the tunnel still comes up.
+- **First connect feels slow** → the Swift helper compiles on each run (a few
+  seconds) before the login window appears; that's expected.
+- **Disconnecting** → there's no disconnect command — press **Ctrl-C** in the
+  terminal where it's running.
+- **HIP report / routing warnings on connect** → messages like `Server asked us to
+  submit HIP report …` or `route: … Can't assign requested address` are expected on
+  macOS and harmless; the tunnel still comes up and the campus routes are added.
 
 ## License
 
