@@ -83,6 +83,8 @@ let htmlNamedEntities: [String: Character] = ["amp": "&", "lt": "<", "gt": ">", 
 let actionPattern = "<form[^>]*\\saction=\"([^\"]+)\""
 let samlResponsePattern = "\\sname=\"SAMLResponse\"[^>]*\\svalue=\"([^\"]+)\""
 let relayStatePattern = "\\sname=\"RelayState\"[^>]*\\svalue=\"([^\"]*)\""
+// The hidden SAMLRequest input in a POST-binding prelogin form (restricted gateway).
+let samlRequestInputPattern = "\\sname=\"SAMLRequest\"[^>]*\\svalue=\"([^\"]+)\""
 // The prelogin XML wrapper around the base64 SAML AuthnRequest.
 let samlRequestPattern = "<saml-request>(.*?)</saml-request>"
 // Shared matching options, and the patterns compiled once at startup into an
@@ -92,7 +94,7 @@ let samlRequestPattern = "<saml-request>(.*?)</saml-request>"
 let regexOptions: NSRegularExpression.Options = [.caseInsensitive, .dotMatchesLineSeparators]
 let compiledPatterns: [String: NSRegularExpression] = {
     var d: [String: NSRegularExpression] = [:]
-    for p in [actionPattern, samlResponsePattern, relayStatePattern, samlRequestPattern] {
+    for p in [actionPattern, samlResponsePattern, relayStatePattern, samlRequestInputPattern, samlRequestPattern] {
         d[p] = try? NSRegularExpression(pattern: p, options: regexOptions)
     }
     return d
@@ -190,9 +192,16 @@ func formEncode(_ s: String) -> String {
     return pct.replacingOccurrences(of: "%20", with: "+")
 }
 
-/// POST the gateway prelogin and return the decoded shib SAML IdP URL.
-/// Shared by the login window, the capture, and --probe. Logs its own failure cause.
-func fetchSamlURL(using session: URLSession = makeDirectSession(), quiet: Bool = false) -> URL? {
+/// How to begin the shib SAML flow, per the gateway's SAML binding.
+enum SamlStart {
+    case redirect(URL)                                 // GET this URL (REDIRECT: split/full)
+    case post(action: URL, body: Data, html: String)   // POST this form (POST: restricted)
+}
+
+/// POST the gateway prelogin and decode how to start the shib SAML flow. The two
+/// bindings Berkeley uses: REDIRECT (split/full) yields a GET URL; POST (restricted)
+/// yields a self-submitting HTML form. Shared by the window, capture, and --probe.
+func fetchSamlStart(using session: URLSession = makeDirectSession(), quiet: Bool = false) -> SamlStart? {
     guard let pre = URL(string: preloginURLString) else {
         if !quiet { errlog("prelogin failed: could not build URL for gateway '\(gateway)'") }
         return nil
@@ -200,7 +209,7 @@ func fetchSamlURL(using session: URLSession = makeDirectSession(), quiet: Bool =
     var req = URLRequest(url: pre); req.httpMethod = "POST"
     req.setValue(gpUserAgent, forHTTPHeaderField: "User-Agent")
     let sem = DispatchSemaphore(value: 0)
-    var result: URL?
+    var result: SamlStart?
     var failure: String?
     session.dataTask(with: req) { data, resp, err in
         defer { sem.signal() }
@@ -212,13 +221,32 @@ func fetchSamlURL(using session: URLSession = makeDirectSession(), quiet: Bool =
         let s = String(decoding: data.prefix(maxBodyBytes), as: UTF8.self)
         guard let b64 = firstMatch(samlRequestPattern, in: s),
               let dd = Data(base64Encoded: b64, options: .ignoreUnknownCharacters),
-              let us = String(data: dd, encoding: .utf8), let u = URL(string: us) else {
+              let payload = String(data: dd, encoding: .utf8) else {
             failure = "no usable <saml-request> in prelogin response" + status; return
         }
-        guard u.scheme == "https", let host = u.host?.lowercased(), host.hasSuffix(".berkeley.edu") else {
-            failure = "saml-request points off-site: \(truncated(u.absoluteString, urlDisplayChars))"; return
+        let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.lowercased().hasPrefix("http") {
+            // REDIRECT binding: the payload is the shib IdP GET URL.
+            guard let u = URL(string: trimmed),
+                  u.scheme == "https", let host = u.host?.lowercased(), host.hasSuffix(".berkeley.edu") else {
+                failure = "saml-request points off-site: \(truncated(trimmed, urlDisplayChars))"; return
+            }
+            result = .redirect(u)
+        } else {
+            // POST binding: the payload is a self-submitting form posting SAMLRequest
+            // (+ RelayState) to the shib IdP.
+            guard let action = firstMatch(actionPattern, in: payload).map(htmlUnescape),
+                  let actionURL = URL(string: action), actionURL.scheme == "https",
+                  let host = actionURL.host?.lowercased(), host.hasSuffix(".berkeley.edu"),
+                  let samlReq = firstMatch(samlRequestInputPattern, in: payload).map(htmlUnescape) else {
+                failure = "could not parse POST-binding saml-request form" + status; return
+            }
+            var body = "SAMLRequest=\(formEncode(samlReq))"
+            if let relay = firstMatch(relayStatePattern, in: payload).map(htmlUnescape) {
+                body += "&RelayState=\(formEncode(relay))"
+            }
+            result = .post(action: actionURL, body: Data(body.utf8), html: payload)
         }
-        result = u
     }.resume()
     sem.wait()
     if result == nil, let f = failure, !quiet { errlog("prelogin failed: \(f)") }
@@ -423,9 +451,18 @@ final class Capturer: NSObject, URLSessionTaskDelegate {
     func run() -> Bool {
         // 1. Fresh prelogin -> shib SAML request URL (over this session so the SSO
         //    cookies and GP User-Agent are carried through).
-        guard let samlURL = fetchSamlURL(using: session, quiet: quiet) else { return false }
-        // 2. GET the shib SAML URL (SSO active -> auto-post form, no Duo).
-        guard let (hd, shibResp) = send(samlURL) else { return false }
+        guard let start = fetchSamlStart(using: session, quiet: quiet) else { return false }
+        // 2. Reach the shib SSO endpoint (SSO active -> auto-post form back to the
+        //    gateway ACS, no Duo). REDIRECT binding GETs the URL; POST binding
+        //    (restricted) POSTs the SAMLRequest form.
+        let shib: (Data, HTTPURLResponse)?
+        switch start {
+        case .redirect(let url):
+            shib = send(url)
+        case .post(let action, let body, _):
+            shib = send(action, method: "POST", body: body, contentType: "application/x-www-form-urlencoded")
+        }
+        guard let (hd, shibResp) = shib else { return false }
         let html = String(decoding: hd.prefix(maxBodyBytes), as: UTF8.self)
         guard let action = firstMatch(actionPattern, in: html),
               let samlResp = firstMatch(samlResponsePattern, in: html),
@@ -529,11 +566,20 @@ final class App: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         // Fetch the start URL off-main so a slow/unreachable network can't freeze
         // the window before it appears.
         DispatchQueue.global().async {
-            guard let start = fetchSamlURL() else {
+            guard let start = fetchSamlStart() else {
                 DispatchQueue.main.async { die("ERROR: could not reach \(gateway) prelogin") }
                 return
             }
-            DispatchQueue.main.async { self.webView.load(URLRequest(url: start)) }
+            DispatchQueue.main.async {
+                switch start {
+                case .redirect(let url):
+                    self.webView.load(URLRequest(url: url))
+                case .post(_, _, let html):
+                    // The POST-binding payload is a self-submitting form; load it so
+                    // WebKit posts it to shib carrying the user's SSO cookies.
+                    self.webView.loadHTMLString(html, baseURL: URL(string: "https://shib.berkeley.edu/"))
+                }
+            }
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + loginTimeout) {
@@ -611,11 +657,16 @@ final class App: NSObject, NSApplicationDelegate, WKNavigationDelegate {
 // MARK: - Verification modes (--selftest is offline; --probe makes one live request)
 
 func probe() -> Never {
-    guard let url = fetchSamlURL() else {
+    guard let start = fetchSamlStart() else {
         die("FAIL  could not reach \(gateway) prelogin or parse its saml-request")
     }
     print("OK  \(gateway) prelogin reachable over TLS")
-    print("OK  SAML IdP: \(truncated(url.absoluteString, urlDisplayChars))")
+    switch start {
+    case .redirect(let url):
+        print("OK  SAML IdP (REDIRECT binding): \(truncated(url.absoluteString, urlDisplayChars))")
+    case .post(let action, _, _):
+        print("OK  SAML IdP (POST binding): \(truncated(action.absoluteString, urlDisplayChars))")
+    }
     exit(0)
 }
 
@@ -644,6 +695,9 @@ func selftest() -> Never {
     }
     check("action URL", firstMatch(actionPattern, in: html).map(htmlUnescape), "https://\(host)/SAML20/SP/ACS")
     check("SAMLResponse decode", firstMatch(samlResponsePattern, in: html).map(htmlUnescape), rawSAML)
+    check("SAMLRequest decode (POST binding)",
+          firstMatch(samlRequestInputPattern, in: html.replacingOccurrences(of: "SAMLResponse", with: "SAMLRequest")).map(htmlUnescape),
+          rawSAML)
     check("RelayState decode", firstMatch(relayStatePattern, in: html).map(htmlUnescape), "ss:mem:abc&def")
     check("entity decode (dec/hex/named)", htmlUnescape("a&#43;b&#x2f;c&#X2B;d&amp;e&lt;f"), "a+b/c+d&e<f")
     check("named amp not double-decoded", htmlUnescape("&amp;lt;"), "&lt;")
