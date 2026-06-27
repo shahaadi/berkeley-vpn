@@ -12,11 +12,16 @@
 // The --probe / --selftest diagnostic modes print their results to stdout (with
 // failure detail on stderr).
 //
-// The WebKit data store is persistent, so after the first login the SSO session
-// is reused and no Duo prompt appears until it expires.
+// After a login we save the Berkeley SSO cookies in the login Keychain (encrypted
+// at rest) and reuse them on the next run to replay the SAML flow headless (no
+// window, no Duo) until the session expires. WebKit's own "persistent" store is not
+// enough here: Shibboleth's SSO cookies are session cookies (no expiry), which
+// WebKit drops between separate process launches — so without our own copy every
+// connect would prompt for Duo.
 
 import Cocoa
 import WebKit
+import Security
 
 // MARK: - Configuration
 
@@ -59,7 +64,8 @@ let captureTimeout: Double = 120
 let maxRedirects = 10   // total redirect hops allowed across the capture flow
 let windowWidth: CGFloat = 520
 let windowHeight: CGFloat = 680
-let logSnippetChars = 200   // shib body shown on a parse failure
+let logSnippetChars = 200       // shib body shown on a parse failure
+let maxBodyBytes = 256 * 1024   // cap response bodies before regex parsing (real ones are KB)
 let urlDisplayChars = 64    // IdP URL shown by --probe / off-site failures
 // Max distance from '&' to ';' to treat as an entity (body is at most
 // maxEntitySpan-1 chars); the longest real body is 8 ("#x10FFFF" / "#1114111").
@@ -92,7 +98,7 @@ let compiledPatterns: [String: NSRegularExpression] = {
     return d
 }()
 
-func errlog(_ s: String) { FileHandle.standardError.write(Data((s + "\n").utf8)) }
+func errlog(_ s: String) { try? FileHandle.standardError.write(contentsOf: Data((s + "\n").utf8)) }
 func die(_ s: String) -> Never { errlog(s); exit(1) }
 func truncated(_ s: String, _ n: Int) -> String { s.count > n ? String(s.prefix(n)) + "…" : s }
 
@@ -186,9 +192,10 @@ func formEncode(_ s: String) -> String {
 
 /// POST the gateway prelogin and return the decoded shib SAML IdP URL.
 /// Shared by the login window, the capture, and --probe. Logs its own failure cause.
-func fetchSamlURL(using session: URLSession = makeDirectSession()) -> URL? {
+func fetchSamlURL(using session: URLSession = makeDirectSession(), quiet: Bool = false) -> URL? {
     guard let pre = URL(string: preloginURLString) else {
-        errlog("prelogin failed: could not build URL for gateway '\(gateway)'"); return nil
+        if !quiet { errlog("prelogin failed: could not build URL for gateway '\(gateway)'") }
+        return nil
     }
     var req = URLRequest(url: pre); req.httpMethod = "POST"
     req.setValue(gpUserAgent, forHTTPHeaderField: "User-Agent")
@@ -199,9 +206,10 @@ func fetchSamlURL(using session: URLSession = makeDirectSession()) -> URL? {
         defer { sem.signal() }
         if let err = err { failure = err.localizedDescription; return }
         let status = (resp as? HTTPURLResponse).map { " (HTTP \($0.statusCode))" } ?? ""
-        guard let data = data, let s = String(data: data, encoding: .utf8) else {
-            failure = "empty/undecodable prelogin response" + status; return
+        guard let data = data else {
+            failure = "empty prelogin response" + status; return
         }
+        let s = String(decoding: data.prefix(maxBodyBytes), as: UTF8.self)
         guard let b64 = firstMatch(samlRequestPattern, in: s),
               let dd = Data(base64Encoded: b64, options: .ignoreUnknownCharacters),
               let us = String(data: dd, encoding: .utf8), let u = URL(string: us) else {
@@ -213,8 +221,109 @@ func fetchSamlURL(using session: URLSession = makeDirectSession()) -> URL? {
         result = u
     }.resume()
     sem.wait()
-    if result == nil, let f = failure { errlog("prelogin failed: \(f)") }
+    if result == nil, let f = failure, !quiet { errlog("prelogin failed: \(f)") }
     return result
+}
+
+// MARK: - Saved CalNet session (cookie jar persisted between runs)
+
+// WebKit drops session cookies (Shibboleth's _shibsession_/JSESSIONID have no
+// expiry) between process launches, so we persist the Berkeley SSO cookies
+// ourselves and reload them to reuse the session. They live in the login Keychain
+// (encrypted at rest, like Chrome stores its cookie key) under our own item.
+// Access is prompt-free in normal use because every run is the same `swift`
+// toolchain binary, which the item's ACL trusts — you may see a one-time Keychain
+// "Allow" after a macOS/Xcode toolchain update changes that binary's identity.
+let keychainService = "berkeley-vpn"
+let keychainAccount = "calnet-session"
+
+// A cookie boiled down to the fields we need to recreate it. (HTTPOnly isn't
+// settable via HTTPCookie(properties:) and only restricts JS access — irrelevant
+// to our server-side SAML replay — so it's intentionally dropped.)
+struct StoredCookie: Codable {
+    let name, value, domain, path: String
+    let secure: Bool
+    let expires: Double?   // seconds since 1970; nil = session cookie
+}
+
+func isBerkeleyCookie(_ c: HTTPCookie) -> Bool {
+    let d = c.domain.lowercased()
+    // Only the Berkeley SSO cookies, which is all the headless SAML replay sends
+    // (the capture session injects only *.berkeley.edu). Duo cookies are
+    // intentionally NOT persisted here — the headless path never uses them, and
+    // Duo "remember this device" already persists in WebKit's own store for the
+    // interactive window — so we avoid persisting them needlessly.
+    return d == "berkeley.edu" || d.hasSuffix(".berkeley.edu")
+}
+
+private func keychainItem() -> [String: Any] {
+    [kSecClass as String: kSecClassGenericPassword,
+     kSecAttrService as String: keychainService,
+     kSecAttrAccount as String: keychainAccount]
+}
+
+/// Persist the Berkeley SSO cookies to the login Keychain (encrypted at rest).
+/// Returns true on success. Best-effort on the capture path (a failure just means
+/// the next run logs in again); `--login` treats a failure as an error.
+@discardableResult
+func saveSessionCookies(_ cookies: [HTTPCookie]) -> Bool {
+    let rows = cookies.filter(isBerkeleyCookie).map {
+        StoredCookie(name: $0.name, value: $0.value, domain: $0.domain,
+                     path: $0.path.isEmpty ? "/" : $0.path, secure: $0.isSecure,
+                     expires: $0.expiresDate?.timeIntervalSince1970)
+    }
+    guard !rows.isEmpty, let data = try? JSONEncoder().encode(rows) else { return false }
+    SecItemDelete(keychainItem() as CFDictionary)   // replace any existing item
+    var add = keychainItem()
+    add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+    add[kSecValueData as String] = data
+    var st = SecItemAdd(add as CFDictionary, nil)
+    if st == errSecDuplicateItem {
+        // The delete above didn't take (locked/contended keychain) — update in place
+        // so we don't keep a stale session.
+        st = SecItemUpdate(keychainItem() as CFDictionary,
+                           [kSecValueData as String: data] as CFDictionary)
+    }
+    if st != errSecSuccess { errlog("note: could not save CalNet session (Keychain status \(st))") }
+    return st == errSecSuccess
+}
+
+/// Rebuild the saved cookies from the Keychain, dropping any that have expired.
+func loadStoredCookies() -> [HTTPCookie] {
+    var query = keychainItem()
+    query[kSecReturnData as String] = true
+    query[kSecMatchLimit as String] = kSecMatchLimitOne
+    var out: CFTypeRef?
+    guard SecItemCopyMatching(query as CFDictionary, &out) == errSecSuccess,
+          let data = out as? Data,
+          let rows = try? JSONDecoder().decode([StoredCookie].self, from: data) else { return [] }
+    let now = Date()
+    return rows.compactMap { row -> HTTPCookie? in
+        if let e = row.expires, Date(timeIntervalSince1970: e) <= now { return nil }
+        var props: [HTTPCookiePropertyKey: Any] = [
+            .name: row.name, .value: row.value, .domain: row.domain, .path: row.path,
+        ]
+        if row.secure { props[.secure] = "TRUE" }
+        if let e = row.expires { props[.expires] = Date(timeIntervalSince1970: e) }
+        return HTTPCookie(properties: props)
+    }
+}
+
+/// Delete the saved CalNet session from the Keychain.
+func clearStoredSession() {
+    SecItemDelete(keychainItem() as CFDictionary)
+}
+
+/// Emit the captured token as JSON on stdout and exit. Slashes are left unescaped
+/// (cookies/usernames may contain '/') and keys sorted for deterministic output.
+func emitTokenAndExit(cookie: String, user: String) -> Never {
+    let enc = JSONEncoder()
+    enc.outputFormatting = [.withoutEscapingSlashes, .sortedKeys]
+    guard let data = try? enc.encode(["prelogin-cookie": cookie, "saml-username": user]) else {
+        die("ERROR: failed to encode token JSON")
+    }
+    try? FileHandle.standardOutput.write(contentsOf: data + Data("\n".utf8))
+    exit(0)
 }
 
 // MARK: - URLSession capture (runs after SSO is established in the WebView)
@@ -227,6 +336,9 @@ final class Capturer: NSObject, URLSessionTaskDelegate {
     var preloginCookie: String?
     var samlUsername: String?
     var redirectCount = 0
+    // Suppress the expected-failure logs during the speculative headless attempt
+    // (a stale saved session): we'll fall back to the login window, not error out.
+    var quiet = false
     let cookies: [HTTPCookie]
     lazy var session: URLSession = {
         let cfg = URLSessionConfiguration.ephemeral
@@ -275,7 +387,7 @@ final class Capturer: NSObject, URLSessionTaskDelegate {
         redirectCount += 1
         guard redirectCount <= maxRedirects, let u = request.url, u.scheme == "https",
               (u.host?.lowercased().hasSuffix(".berkeley.edu") ?? false) else {
-            errlog("  refusing redirect to \(request.url.map { truncated($0.absoluteString, urlDisplayChars) } ?? "?")")
+            if !quiet { errlog("  refusing redirect to \(request.url.map { truncated($0.absoluteString, urlDisplayChars) } ?? "?")") }
             completionHandler(nil); return
         }
         var req = request
@@ -303,7 +415,7 @@ final class Capturer: NSObject, URLSessionTaskDelegate {
             sem.signal()
         }.resume()
         sem.wait()
-        if out == nil { errlog("  \(method) \(url.host ?? "?") failed: \(failure ?? "no response")") }
+        if out == nil, !quiet { errlog("  \(method) \(url.host ?? "?") failed: \(failure ?? "no response")") }
         return out
     }
 
@@ -311,17 +423,23 @@ final class Capturer: NSObject, URLSessionTaskDelegate {
     func run() -> Bool {
         // 1. Fresh prelogin -> shib SAML request URL (over this session so the SSO
         //    cookies and GP User-Agent are carried through).
-        guard let samlURL = fetchSamlURL(using: session) else { return false }
+        guard let samlURL = fetchSamlURL(using: session, quiet: quiet) else { return false }
         // 2. GET the shib SAML URL (SSO active -> auto-post form, no Duo).
         guard let (hd, shibResp) = send(samlURL) else { return false }
-        let html = String(data: hd, encoding: .utf8) ?? ""
+        let html = String(decoding: hd.prefix(maxBodyBytes), as: UTF8.self)
         guard let action = firstMatch(actionPattern, in: html),
               let samlResp = firstMatch(samlResponsePattern, in: html),
               let actionURL = URL(string: htmlUnescape(action)),
               actionURL.scheme == "https", actionURL.host?.lowercased() == gateway else {
-            errlog("could not parse SAML form from shib response (HTTP \(shibResp.statusCode); SSO cookie not carried?)")
-            let snippet = html.replacingOccurrences(of: "\n", with: " ")
-            errlog("  shib returned: \(truncated(snippet, logSnippetChars))")
+            if !quiet {
+                errlog("could not parse SAML form from shib response (HTTP \(shibResp.statusCode); SSO cookie not carried?)")
+                // Redact attribute values (the SAMLResponse assertion, RelayState)
+                // so a diagnostic dump can't leak signed identity data.
+                let snippet = html
+                    .replacingOccurrences(of: "value=\"[^\"]*\"", with: "value=\"…\"", options: .regularExpression)
+                    .replacingOccurrences(of: "\n", with: " ")
+                errlog("  shib returned: \(truncated(snippet, logSnippetChars))")
+            }
             return false
         }
         // 3. POST SAMLResponse (+ RelayState if the form carried one — a
@@ -338,7 +456,7 @@ final class Capturer: NSObject, URLSessionTaskDelegate {
         if preloginCookie == nil || samlUsername == nil {
             let missing = [("prelogin-cookie", preloginCookie), ("saml-username", samlUsername)]
                 .filter { $0.1 == nil }.map { $0.0 }.joined(separator: ", ")
-            errlog("ACS response missing \(missing) (HTTP \(acsResp.statusCode))")
+            if !quiet { errlog("ACS response missing \(missing) (HTTP \(acsResp.statusCode))") }
         }
         return preloginCookie != nil && samlUsername != nil
     }
@@ -407,13 +525,23 @@ final class App: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         guard host == gateway || host == "vpn.berkeley.edu"
               || host.hasSuffix(".vpn.berkeley.edu") else { return }
         done = true
-        // --login: the CalNet SSO session is now stored in the persistent data
-        // store; exit without capturing a token or connecting. The brief delay lets
-        // WebKit flush the cookies to disk first.
+        // --login: just establish + persist the CalNet session, then exit without
+        // capturing a token or connecting.
         if loginOnly {
-            errlog("CalNet login complete — session saved (no VPN connection made).")
             window.orderOut(nil)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { exit(0) }
+            // Bound it like the capture path (getAllCookies has no timeout of its own).
+            DispatchQueue.main.asyncAfter(deadline: .now() + captureTimeout) {
+                die("ERROR: saving CalNet session timed out (\(Int(captureTimeout))s)")
+            }
+            // Read the live cookies and persist them so the next connect can reuse
+            // the session headless (no window, no Duo).
+            webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
+                guard saveSessionCookies(cookies) else {
+                    die("ERROR: login succeeded but the session could not be saved.")
+                }
+                errlog("CalNet login complete — session saved (no VPN connection made).")
+                exit(0)
+            }
             return
         }
         errlog("Login detected — capturing token…")
@@ -428,6 +556,9 @@ final class App: NSObject, NSApplicationDelegate, WKNavigationDelegate {
 
         let store = webView.configuration.websiteDataStore.httpCookieStore
         store.getAllCookies { cookies in
+            // Persist the freshly-established session so future connects skip the
+            // window and Duo entirely (reused by the headless fast path at startup).
+            saveSessionCookies(cookies)
             DispatchQueue.global().async {
                 let cap = Capturer(cookies: cookies)
                 _ = cap.run()
@@ -435,20 +566,11 @@ final class App: NSObject, NSApplicationDelegate, WKNavigationDelegate {
                 guard let pc = cap.preloginCookie, let user = cap.samlUsername else {
                     die("ERROR: token capture failed (see messages above)")
                 }
-                let enc = JSONEncoder()
-                // Cookies/usernames may contain '/', which the default encoder
-                // escapes to '\/' and corrupts downstream; sorted keys make the
-                // output deterministic.
-                enc.outputFormatting = [.withoutEscapingSlashes, .sortedKeys]
-                guard let data = try? enc.encode(["prelogin-cookie": pc, "saml-username": user]) else {
-                    die("ERROR: failed to encode token JSON")
-                }
-                // Set `captured` and write/exit on main, the same queue as the
-                // capture watchdog, so the two can't race.
+                // Defuse the capture watchdog before emitting (same main queue), so
+                // a just-finished capture can't trip a spurious timeout.
                 DispatchQueue.main.async {
                     self.captured = true
-                    FileHandle.standardOutput.write(data + Data("\n".utf8))
-                    exit(0)
+                    emitTokenAndExit(cookie: pc, user: user)
                 }
             }
         }
@@ -517,6 +639,8 @@ func selftest() -> Never {
 
 /// Clear the persistent WebKit data store (the saved CalNet SSO session) and exit.
 func logout() -> Never {
+    // Drop our saved Keychain session as well as WebKit's data store.
+    clearStoredSession()
     let store = WKWebsiteDataStore.default()
     store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
                      modifiedSince: .distantPast) {
@@ -544,6 +668,7 @@ func usageText() -> String {
 
 // MARK: - Entry
 
+signal(SIGPIPE, SIG_IGN)   // a consumer closing our stdout/stderr shouldn't kill us by signal
 let cliArgs = Array(CommandLine.arguments.dropFirst())
 let knownFlags: Set<String> = ["-h", "--help", "--probe", "--selftest", "--logout", "--login"]
 // Help wins over everything (matches connect.sh), then reject unknown args.
@@ -560,6 +685,9 @@ let modeFlags = cliArgs.filter { $0 == "--probe" || $0 == "--selftest" }
 if Set(modeFlags).count > 1 {
     errlog("use at most one mode flag (--probe or --selftest)"); errlog(usageText()); exit(2)
 }
+if loginOnly && !modeFlags.isEmpty {
+    errlog("--login can't be combined with --probe or --selftest"); errlog(usageText()); exit(2)
+}
 if modeFlags.contains("--selftest") { selftest() }   // offline; no gateway needed
 
 // Validate the gateway before building any URL from it: a strict hostname charset
@@ -575,8 +703,27 @@ guard gateway.range(of: "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a
 
 if modeFlags.contains("--probe") { probe() }
 
+// Fast path: if we have a saved CalNet session, replay the SAML flow headless and
+// connect with no window/Duo. Only if that fails (expired/missing) do we fall back
+// to the interactive login window below. (--login always opens the window.)
+if !loginOnly {
+    let saved = loadStoredCookies()
+    if !saved.isEmpty {
+        errlog("Reusing saved CalNet session…")
+        let cap = Capturer(cookies: saved)
+        cap.quiet = true   // expected failures (expired session) shouldn't be noisy
+        let ok = cap.run()
+        cap.session.finishTasksAndInvalidate()
+        if ok, let pc = cap.preloginCookie, let user = cap.samlUsername {
+            emitTokenAndExit(cookie: pc, user: user)
+        }
+        errlog("Saved CalNet session expired — opening login…")
+    }
+}
+
 let app = NSApplication.shared
 let delegate = App()
+delegate.loginOnly = loginOnly   // --login: establish the session, don't capture
 app.delegate = delegate
 app.setActivationPolicy(.regular)
 app.run()

@@ -15,14 +15,16 @@ warn() { printf '!! %s\n' "$*" >&2; }
 
 say ">> Installing berkeley-vpn into $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
-# Download to a temp file and move into place only on success, so a dropped
-# connection can't leave a truncated script that then gets run.
+# Download BOTH files to a temp dir first, then move both into place, so a dropped
+# connection can't leave a truncated script. The temp dir is cleaned on any exit.
+tmpd="$(mktemp -d)"
+trap 'rm -rf "$tmpd"' EXIT
 for f in capture.swift connect.sh; do
-    tmp="$(mktemp)"
-    curl -fsSL "$REPO_RAW/$f" -o "$tmp" || { rm -f "$tmp"; warn "download failed: $f"; exit 1; }
-    mv -f "$tmp" "$INSTALL_DIR/$f"
+    curl -fsSL "$REPO_RAW/$f" -o "$tmpd/$f" || { warn "download failed: $f"; exit 1; }
 done
-chmod +x "$INSTALL_DIR/connect.sh"
+mv -f "$tmpd/capture.swift" "$INSTALL_DIR/capture.swift"
+mv -f "$tmpd/connect.sh"    "$INSTALL_DIR/connect.sh"
+chmod +x "$INSTALL_DIR/connect.sh" 2>/dev/null || true
 
 # Link a `berkeley-vpn` command into the first writable bin dir on PATH.
 LINKED=""
@@ -65,3 +67,4 @@ say ""
 say "   Usage:  berkeley-vpn [split | full | restricted]      (-h for help)"
 say "     e.g.  berkeley-vpn          # split tunnel (default)"
 say "           berkeley-vpn full     # full tunnel (all traffic)"
+say "   More:   berkeley-vpn login | logout | update | uninstall"

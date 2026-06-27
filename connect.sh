@@ -9,15 +9,17 @@ set -euo pipefail
 CMD="$(basename "${BASH_SOURCE[0]:-$0}")"   # how the user invoked us (e.g. berkeley-vpn)
 
 usage() {
-    cat <<'EOF'
+    # Unquoted heredoc so "$CMD" reflects how you invoked this (e.g. berkeley-vpn).
+    cat <<EOF
 Berkeley VPN — connect via openconnect + GlobalProtect (no GlobalProtect app needed).
 Opens a WebKit CalNet + Duo login, captures the auth token, and starts the tunnel.
 
 Usage:
-  connect.sh [split | full | restricted]   connect (default: split)
-  connect.sh login                         refresh the CalNet session (no connect)
-  connect.sh logout                        clear the saved CalNet session
-  connect.sh uninstall                     remove berkeley-vpn (asks to confirm)
+  $CMD [split | full | restricted]   connect (default: split)
+  $CMD login                         refresh the CalNet session (no connect)
+  $CMD logout                        clear the saved CalNet session
+  $CMD update                        update berkeley-vpn to the latest version
+  $CMD uninstall                     remove berkeley-vpn (asks to confirm)
 
 Tunnels:
   split        Split Tunnel (DEFAULT) — only campus/Berkeley traffic goes through
@@ -27,8 +29,8 @@ Tunnels:
   restricted   Restricted Tunnel — a limited subset of campus resources.
 
 Examples:
-  ./connect.sh             # split tunnel (default)
-  ./connect.sh full        # full tunnel (all traffic)
+  $CMD             # split tunnel (default)
+  $CMD full        # full tunnel (all traffic)
 
 Advanced (environment variables):
   GP_GATEWAY=<host>   use a specific gateway host (overrides the tunnel choice)
@@ -61,9 +63,13 @@ do_uninstall() {
     local link selfdir="$HERE"
     link="$(command -v berkeley-vpn 2>/dev/null || true)"
     echo "This will remove berkeley-vpn:"
-    echo "  - files:    $selfdir"
+    if [ -d "$selfdir/.git" ]; then
+        echo "  - files:    (kept — $selfdir is a git checkout)"
+    else
+        echo "  - files:    $selfdir/{capture.swift,connect.sh}"
+    fi
     [ -n "$link" ] && [ -L "$link" ] && echo "  - command:  $link"
-    echo "  - the saved CalNet session (WebKit data)"
+    echo "  - the saved CalNet session (Keychain item + WebKit data)"
     printf "Are you sure? [y/N] "
     local ans=""
     # Read the answer from the terminal (only if one is actually openable, so a
@@ -75,21 +81,67 @@ do_uninstall() {
         y|Y|yes|YES|Yes) ;;
         *) echo; echo "Cancelled."; exit 0 ;;
     esac
-    # Clear the saved session (best-effort; needs swift + capture.swift present).
+    # Clear the saved session. The Keychain item we can delete directly (works even
+    # without swift); --logout additionally clears WebKit's data store if swift is present.
+    security delete-generic-password -s berkeley-vpn -a calnet-session >/dev/null 2>&1 || true
     if xcode-select -p >/dev/null 2>&1 && [ -f "$selfdir/capture.swift" ]; then
         swift "$selfdir/capture.swift" --logout 2>/dev/null || true
     fi
     # Remove the command symlink (only if it really is a symlink).
     if [ -n "$link" ] && [ -L "$link" ]; then rm -f "$link" && echo "Removed $link"; fi
-    # Remove the install dir (guarded: must look like a berkeley-vpn dir). A git
-    # checkout is left in place — that's a source clone, not an install.
+    # Remove our files. A git checkout is left in place (it's a source clone). We
+    # delete ONLY our two files and then rmdir the directory, which removes it only
+    # if it's now empty — so dropping the scripts into a shared dir (or installing
+    # to a non-dedicated one) can't take unrelated files down with them.
     if [ -d "$selfdir/.git" ]; then
         echo "Left $selfdir in place (it's a git checkout). Delete it yourself if you want it gone."
-    elif [ -n "$selfdir" ] && [ -f "$selfdir/capture.swift" ]; then
-        rm -rf "$selfdir" && echo "Removed $selfdir"
+    elif [ -n "$selfdir" ] && [ -f "$selfdir/capture.swift" ] && [ -f "$selfdir/connect.sh" ]; then
+        rm -f "$selfdir/capture.swift" "$selfdir/connect.sh"
+        if rmdir "$selfdir" 2>/dev/null; then
+            echo "Removed $selfdir"
+        else
+            echo "Removed the berkeley-vpn files from $selfdir (kept the directory — it has other files)."
+        fi
     fi
-    echo "Uninstalled. (openconnect was left installed — 'brew uninstall openconnect' if you don't need it.)"
+    echo "Done. (openconnect was left installed — 'brew uninstall openconnect' if you don't need it.)"
     exit 0
+}
+
+# Pull the latest version. A git checkout updates with `git pull`; an installed
+# copy re-downloads the two scripts from the repo (matching how install.sh fetches).
+do_update() {
+    local repo_raw="https://raw.githubusercontent.com/shahaadi/berkeley-vpn/main"
+    if [ -d "$HERE/.git" ]; then
+        command -v git >/dev/null 2>&1 || { echo "!! git not found." >&2; exit 1; }
+        echo ">> Updating $HERE (git pull) ..."
+        exec git -C "$HERE" pull --ff-only
+    fi
+    command -v curl >/dev/null 2>&1 || { echo "!! curl not found." >&2; exit 1; }
+    [ -f "$HERE/capture.swift" ] || { echo "!! $HERE doesn't look like a berkeley-vpn install." >&2; exit 1; }
+    echo ">> Downloading the latest berkeley-vpn into $HERE ..."
+    local tmp; tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT   # clean the temp dir even on Ctrl-C mid-download
+    # Download both to temp first, so a dropped connection can't leave a truncated
+    # script. (The two moves below are sequential rename(2)s on the same volume, so
+    # a partial swap is essentially impossible in practice; a failure is reported.)
+    local f ok=1
+    for f in connect.sh capture.swift; do
+        if ! curl -fsSL "$repo_raw/$f" -o "$tmp/$f"; then echo "!! Failed to download $f." >&2; ok=0; break; fi
+    done
+    if [ "$ok" = 1 ]; then
+        # Move BOTH or report failure honestly (don't couple chmod with && — under
+        # set -e a left-of-&& failure is exempt and would falsely report success).
+        if mv -f "$tmp/capture.swift" "$HERE/capture.swift" \
+           && mv -f "$tmp/connect.sh" "$HERE/connect.sh"; then
+            chmod +x "$HERE/connect.sh" 2>/dev/null || true
+            rm -rf "$tmp"
+            echo "Updated. Run '$CMD' to use the new version."
+            exit 0
+        fi
+        echo "!! Update failed while installing files (the install may be half-updated)." >&2
+    fi
+    rm -rf "$tmp"
+    exit 1
 }
 
 # --- Parse the argument: help, a subcommand, or a tunnel name -----------------
@@ -108,6 +160,7 @@ case "$ACTION" in
     login)     require_swift; echo ">> Opening CalNet login to refresh your session (no VPN connection)…"
                exec swift "$HERE/capture.swift" --login ;;
     logout)    require_swift; exec swift "$HERE/capture.swift" --logout ;;
+    update)    do_update ;;
     uninstall) do_uninstall ;;
 esac
 
@@ -117,7 +170,7 @@ case "$ACTION" in
     full)       GW="campus.vpn.berkeley.edu";       DESC="Full Tunnel — ALL traffic goes through the VPN" ;;
     restricted) GW="restricted.vpn.berkeley.edu";   DESC="Restricted Tunnel — limited campus resources" ;;
     *) echo "!! Unknown command/tunnel '$ACTION'." >&2
-       echo "   Use: split | full | restricted | login | logout | uninstall" >&2; usage >&2; exit 2 ;;
+       echo "   Use: split | full | restricted | login | logout | update | uninstall" >&2; usage >&2; exit 2 ;;
 esac
 # An explicit GP_GATEWAY env var overrides the friendly choice (advanced/custom use).
 if [[ -n "${GP_GATEWAY:-}" ]]; then
