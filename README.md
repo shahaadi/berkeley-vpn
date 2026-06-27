@@ -52,7 +52,7 @@ cd berkeley-vpn
 berkeley-vpn              # Split Tunnel (default) — only campus traffic via the VPN
 berkeley-vpn full        # Full Tunnel — ALL traffic via the VPN (library/journal access)
 berkeley-vpn split
-berkeley-vpn restricted
+berkeley-vpn restricted  # optional add-on — asks to install on first use (see below)
 berkeley-vpn --help
 ```
 
@@ -86,7 +86,18 @@ Press **Ctrl-C** in the terminal to disconnect.
 |---|---|---|
 | `split` *(default)* | `campus-split.vpn.berkeley.edu` | Only campus/Berkeley traffic |
 | `full` | `campus.vpn.berkeley.edu` | All of your internet traffic (use for licensed library/journal access) |
-| `restricted` | `restricted.vpn.berkeley.edu` | Restricted tunnel |
+| `restricted` *(opt-in)* | `restricted.vpn.berkeley.edu` | High-security (P4) access — see below |
+
+#### Restricted tunnel (optional add-on)
+
+The **Restricted VPN** is only for staff who access or administer systems holding
+large amounts of restricted (P4) data or key IT infrastructure. It needs prior
+approval from the Information Security Office (`rvpn@berkeley.edu`) and a device
+that meets stricter security requirements — **most people don't need it**, so it's
+kept out of the core tool. The first time you run `berkeley-vpn restricted`, it
+shows who it's for and asks to download a small helper (`restricted.sh`); once
+installed, `restricted` works like the other tunnels. Remove it with
+`berkeley-vpn uninstall`. See Berkeley's [Restricted VPN page](https://security.berkeley.edu/services/bsecure/restricted-vpn).
 
 ### Advanced (environment variables)
 

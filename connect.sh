@@ -26,7 +26,9 @@ Tunnels:
                the VPN; the rest of your internet uses your normal connection.
   full         Full Tunnel — ALL of your internet traffic goes through the VPN
                (use this for licensed library / journal access).
-  restricted   Restricted Tunnel — a limited subset of campus resources.
+  restricted   Restricted Tunnel — optional add-on for high-security (P4) access.
+               First use asks to install a small helper and needs ISO approval;
+               most people don't need this. See '$CMD restricted'.
 
 Examples:
   $CMD             # split tunnel (default)
@@ -50,6 +52,11 @@ while [ -L "$SOURCE" ]; do
 done
 HERE="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 
+# Optional Restricted VPN add-on: a small helper downloaded on first use (see
+# enable_restricted). Its presence next to the tool enables the restricted tunnel.
+RVPN_HELPER="$HERE/restricted.sh"
+RVPN_HELPER_URL="https://raw.githubusercontent.com/shahaadi/berkeley-vpn/main/restricted.sh"
+
 # Require the Command Line Tools (xcode-select, NOT `command -v swift`: /usr/bin/swift
 # is a stub that exists even without the CLT and would pop the GUI installer).
 require_swift() {
@@ -66,7 +73,7 @@ do_uninstall() {
     if [ -d "$selfdir/.git" ]; then
         echo "  - files:    (kept — $selfdir is a git checkout)"
     else
-        echo "  - files:    $selfdir/{capture.swift,connect.sh}"
+        echo "  - files:    $selfdir/{capture.swift,connect.sh,restricted.sh}"
     fi
     [ -n "$link" ] && [ -L "$link" ] && echo "  - command:  $link"
     echo "  - the saved CalNet session (Keychain item + WebKit data)"
@@ -96,7 +103,7 @@ do_uninstall() {
     if [ -d "$selfdir/.git" ]; then
         echo "Left $selfdir in place (it's a git checkout). Delete it yourself if you want it gone."
     elif [ -n "$selfdir" ] && [ -f "$selfdir/capture.swift" ] && [ -f "$selfdir/connect.sh" ]; then
-        rm -f "$selfdir/capture.swift" "$selfdir/connect.sh"
+        rm -f "$selfdir/capture.swift" "$selfdir/connect.sh" "$selfdir/restricted.sh"
         if rmdir "$selfdir" 2>/dev/null; then
             echo "Removed $selfdir"
         else
@@ -105,6 +112,45 @@ do_uninstall() {
     fi
     echo "Done. (openconnect was left installed — 'brew uninstall openconnect' if you don't need it.)"
     exit 0
+}
+
+# Optional install for the Restricted VPN tunnel: warn who it's for, confirm, and
+# download the helper. Called only when `restricted` is requested without the helper.
+enable_restricted() {
+    cat >&2 <<'EOF'
+------------------------------------------------------------------
+  Restricted VPN — optional add-on
+------------------------------------------------------------------
+  The Restricted VPN is for staff who access or administer systems
+  holding large amounts of restricted (P4) data or key IT
+  infrastructure. It is NOT for general use:
+
+    * Access must be approved by the Information Security Office
+      (email rvpn@berkeley.edu) before it will connect.
+    * Your device must meet stricter security requirements
+      (antivirus, host firewall, a supported OS).
+
+  Most people want 'split' (the default) or 'full' instead.
+  More: https://security.berkeley.edu/services/bsecure/restricted-vpn
+
+  Enabling downloads a small helper (restricted.sh) next to the
+  tool; remove it anytime with 'berkeley-vpn uninstall'.
+------------------------------------------------------------------
+EOF
+    printf "Install & enable the Restricted VPN helper? [y/N] " >&2
+    local ans=""
+    if { : </dev/tty; } 2>/dev/null; then IFS= read -r ans </dev/tty || ans=""; fi
+    case "$ans" in
+        y|Y|yes|YES) ;;
+        *) echo "Cancelled — restricted tunnel not enabled." >&2; exit 0 ;;
+    esac
+    command -v curl >/dev/null 2>&1 || { echo "!! curl not found." >&2; exit 1; }
+    local tmp; tmp="$(mktemp)"
+    if ! curl -fsSL "$RVPN_HELPER_URL" -o "$tmp"; then
+        rm -f "$tmp"; echo "!! Failed to download the restricted helper." >&2; exit 1
+    fi
+    mv -f "$tmp" "$RVPN_HELPER" || { rm -f "$tmp"; echo "!! Failed to install the restricted helper." >&2; exit 1; }
+    echo ">> Restricted VPN helper installed ($RVPN_HELPER)." >&2
 }
 
 # Pull the latest version. A git checkout updates with `git pull`; an installed
@@ -168,7 +214,15 @@ esac
 case "$ACTION" in
     split)      GW="campus-split.vpn.berkeley.edu"; DESC="Split Tunnel — only campus traffic goes through the VPN" ;;
     full)       GW="campus.vpn.berkeley.edu";       DESC="Full Tunnel — ALL traffic goes through the VPN" ;;
-    restricted) GW="restricted.vpn.berkeley.edu";   DESC="Restricted Tunnel — limited campus resources" ;;
+    restricted) # Optional add-on: install the helper on first use, then source it
+                # for the gateway host (kept out of the core tool on purpose, so the
+                # host lives ONLY in restricted.sh — no duplicate fallback here).
+                [ -f "$RVPN_HELPER" ] || enable_restricted
+                # shellcheck source=/dev/null
+                . "$RVPN_HELPER"
+                GW="${RVPN_GATEWAY:-}"
+                [ -n "$GW" ] || { echo "!! restricted helper is missing its gateway — reinstall it (berkeley-vpn uninstall, then 'berkeley-vpn restricted')." >&2; exit 1; }
+                DESC="Restricted Tunnel — high-security (P4) access" ;;
     *) echo "!! Unknown command/tunnel '$ACTION'." >&2
        echo "   Use: split | full | restricted | login | logout | update | uninstall" >&2; usage >&2; exit 2 ;;
 esac
