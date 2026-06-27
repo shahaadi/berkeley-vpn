@@ -118,7 +118,7 @@ func scalarChar(_ code: UInt32) -> Character? {
 // --selftest doesn't allocate one. It uses the default redirect policy (no per-hop
 // host check, unlike the capture session) — safe because it carries no cookies and
 // its result, the saml-request URL, is re-validated as https + .berkeley.edu.
-// Has no delegate, so it needs no finishTasksAndInvalidate(): once fetchSamlURL
+// Has no delegate, so it needs no finishTasksAndInvalidate(): once fetchSamlStart
 // returns (its single task already finished), the last reference drops and the
 // session deallocates — no retain cycle, unlike the capture session.
 func makeDirectSession() -> URLSession {
