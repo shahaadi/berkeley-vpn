@@ -471,8 +471,39 @@ final class App: NSObject, NSApplicationDelegate, WKNavigationDelegate {
     var captured = false
     var loginOnly = false   // --login: just establish the SSO session, don't capture
 
+    /// Install a minimal main menu. Without an Edit menu carrying the standard key
+    /// equivalents, macOS never turns ⌘C/⌘V/⌘X/⌘A into copy:/paste:/cut:/selectAll:
+    /// for the focused field — so in this app paste only worked via WebKit's
+    /// right-click menu. These items route to the WKWebView via the responder chain.
+    func installEditMenu() {
+        let mainMenu = NSMenu()
+
+        let appItem = NSMenuItem()
+        mainMenu.addItem(appItem)
+        let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "Hide", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        appMenu.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appItem.submenu = appMenu
+
+        let editItem = NSMenuItem()
+        mainMenu.addItem(editItem)
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        let redo = editMenu.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editItem.submenu = editMenu
+
+        NSApp.mainMenu = mainMenu
+    }
+
     func applicationDidFinishLaunching(_ note: Notification) {
         if let w = loginTimeoutWarning { errlog("note: \(w)") }
+        installEditMenu()   // so ⌘C/⌘V/⌘X/⌘A work in the web form, not just right-click
         let cfg = WKWebViewConfiguration()
         // Note on autofill/passkeys: neither works in this window, by design of the
         // platform. macOS WKWebView has no web-form password AutoFill surface (that

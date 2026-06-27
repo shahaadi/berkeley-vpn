@@ -113,11 +113,13 @@ key) and replayed headlessly until the session expires. Clear them anytime with
 VPN token is short-lived — handed straight to `openconnect`, not persisted. Nothing
 runs in the background.
 
-> **Autofill / passkeys:** the login window can't offer saved-password autofill or
-> passkeys. macOS WKWebView has no web-form autofill surface, and passkeys would
-> require an Apple entitlement only Berkeley/Duo could grant. So type your CalNet
-> password and approve Duo by push or passcode — the persistent session means
-> you usually won't be asked again for a while.
+> **Autofill / passkeys:** the window can't use macOS's *built-in* saved-password
+> autofill or passkeys — embedded WKWebViews have no web-form autofill surface, and
+> passkeys/WebAuthn need an associated-domains entitlement only Berkeley/Duo could
+> grant. Workarounds that do work: **paste** (⌘V or right-click), and a **system-wide
+> password manager** (e.g. 1Password's universal autofill, ⌘\) fills the window via
+> macOS accessibility just like any other app. With the saved session you rarely log
+> in anyway.
 
 ## Troubleshooting
 
