@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Installer for berkeley-vpn — a lightweight openconnect wrapper for the UC
+# Installer for berkeley-vpn, a lightweight openconnect wrapper for the UC
 # Berkeley VPN. Downloads the two scripts and links a `berkeley-vpn` command.
 #
 #   curl -fsSL https://raw.githubusercontent.com/shahaadi/berkeley-vpn/main/install.sh | bash
@@ -20,7 +20,7 @@ mkdir -p "$INSTALL_DIR"
 tmpd="$(mktemp -d)"
 trap 'rm -rf "$tmpd"' EXIT
 for f in capture.swift connect.sh VERSION; do
-    curl -fsSL "$REPO_RAW/$f" -o "$tmpd/$f" || { warn "download failed: $f"; exit 1; }
+    curl -fsSL "$REPO_RAW/$f" -o "$tmpd/$f" || { warn "Download failed: $f."; exit 1; }
 done
 mv -f "$tmpd/capture.swift" "$INSTALL_DIR/capture.swift"
 mv -f "$tmpd/connect.sh"    "$INSTALL_DIR/connect.sh"
@@ -44,7 +44,7 @@ if [ -z "$LINKED" ]; then
 fi
 
 say ""
-say ">> Installed."
+say "Installed."
 if [ -n "$LINKED" ]; then
     say "   Command: berkeley-vpn  ->  $LINKED"
     bindir="$(dirname "$LINKED")"
@@ -58,14 +58,14 @@ else
     say "   Run it with: $INSTALL_DIR/connect.sh"
 fi
 
-# Dependency hints — don't auto-install, just tell the user what's missing.
+# Dependency hints, don't auto-install, just tell the user what's missing.
 command -v openconnect >/dev/null 2>&1 || warn "openconnect is not installed. Install it with:  brew install openconnect"
 # Use xcode-select, not `command -v swift`: /usr/bin/swift is a stub present even
 # without the Command Line Tools.
 xcode-select -p >/dev/null 2>&1 || warn "Xcode Command Line Tools not found (needed for swift). Install:  xcode-select --install"
 
 say ""
-say "   Usage:  berkeley-vpn [split | full | restricted]      (run 'berkeley-vpn help')"
+say "   Usage:  berkeley-vpn [split | full | restricted]      (run 'berkeley-vpn help' for help)"
 say "     e.g.  berkeley-vpn          # split tunnel (default)"
 say "           berkeley-vpn full     # full tunnel (all traffic)"
 say "   More:   berkeley-vpn set | login | logout | update | version | uninstall | help"
