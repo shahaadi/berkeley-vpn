@@ -1,6 +1,6 @@
 # berkeley-vpn
 
-A tiny **CLI wrapper around [openconnect](https://www.infradead.org/openconnect/)**
+A tiny **macOS CLI wrapper around [openconnect](https://www.infradead.org/openconnect/)**
 for connecting to the **UC Berkeley VPN** (`vpn.berkeley.edu`) — without installing
 Palo Alto's GlobalProtect app.
 
@@ -42,6 +42,10 @@ cd berkeley-vpn
 ./connect.sh
 ```
 
+> Running from a clone? Use `./connect.sh` wherever this README says `berkeley-vpn`
+> (e.g. `./connect.sh full`, `./connect.sh logout`). Installing via the one-liner
+> above gives you the `berkeley-vpn` command on your `PATH` instead.
+
 ## Usage
 
 ```sh
@@ -57,6 +61,7 @@ berkeley-vpn --help
 ```sh
 berkeley-vpn login       # open the CalNet login to refresh your session (no connect)
 berkeley-vpn logout      # clear the saved CalNet session (forces a fresh login)
+berkeley-vpn update      # update berkeley-vpn to the latest version from the repo
 berkeley-vpn uninstall   # remove berkeley-vpn (asks to confirm first)
 ```
 
@@ -100,9 +105,13 @@ Press **Ctrl-C** in the terminal to disconnect.
    `openconnect --protocol=gp --usergroup gateway:prelogin-cookie …` to bring up
    the tunnel.
 
-Your password never touches this tool — you type it into the CalNet window, Duo
-approves, and only a short-lived VPN token is used. Nothing is stored or runs in
-the background.
+Your password never touches this tool — you type it into the CalNet window and Duo
+approves. To skip re-login on every connect, your CalNet **session cookies** are
+saved in your **login Keychain** (encrypted at rest, like Chrome stores its cookie
+key) and replayed headlessly until the session expires. Clear them anytime with
+`berkeley-vpn logout`. Your CalNet password is never handled by this tool, and the
+VPN token is short-lived — handed straight to `openconnect`, not persisted. Nothing
+runs in the background.
 
 > **Autofill / passkeys:** the login window can't offer saved-password autofill or
 > passkeys. macOS WKWebView has no web-form autofill surface, and passkeys would
@@ -113,7 +122,7 @@ the background.
 ## Troubleshooting
 
 - **`openconnect not found`** → `brew install openconnect`
-- **`Swift toolchain not found`** → `xcode-select --install`
+- **`Xcode Command Line Tools not found`** → `xcode-select --install`
 - **Login window opens but no token captured** → it prints the reason to the
   terminal; just re-run.
 - **`Run from a terminal …`** → run it in a real terminal (it needs a tty for the
