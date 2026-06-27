@@ -19,7 +19,8 @@ Usage:
   $CMD set [split|full|restricted]   set the default tunnel (no arg shows it)
   $CMD login                         refresh the CalNet session (no connect)
   $CMD logout                        clear the saved CalNet session
-  $CMD update                        update berkeley-vpn to the latest version
+  $CMD update                        update to the latest version (if newer)
+  $CMD version                       print the installed version (also -v)
   $CMD uninstall                     remove berkeley-vpn (asks to confirm)
 
 Tunnels:
@@ -62,6 +63,14 @@ RVPN_HELPER_URL="https://raw.githubusercontent.com/shahaadi/berkeley-vpn/main/re
 # (set via `berkeley-vpn set …`) instead of the built-in split default.
 CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME:-${TMPDIR:-/tmp}}/Library/Application Support}/berkeley-vpn"
 DEFAULT_FILE="$CONFIG_DIR/default-tunnel"
+
+# The installed version, read from the VERSION file next to the tool (whitespace
+# trimmed). `update` compares this against the repo's VERSION so an up-to-date
+# install doesn't re-download the scripts.
+read_version() {
+    if [ -f "$HERE/VERSION" ]; then tr -d '[:space:]' <"$HERE/VERSION"; else printf 'unknown'; fi
+}
+print_version() { printf 'berkeley-vpn %s\n' "$(read_version)"; }
 
 # Require the Command Line Tools (xcode-select, NOT `command -v swift`: /usr/bin/swift
 # is a stub that exists even without the CLT and would pop the GUI installer).
@@ -112,7 +121,7 @@ do_uninstall() {
     if [ -d "$selfdir/.git" ]; then
         echo "Left $selfdir in place (it's a git checkout). Delete it yourself if you want it gone."
     elif [ -n "$selfdir" ] && [ -f "$selfdir/capture.swift" ] && [ -f "$selfdir/connect.sh" ]; then
-        rm -f "$selfdir/capture.swift" "$selfdir/connect.sh" "$selfdir/restricted.sh"
+        rm -f "$selfdir/capture.swift" "$selfdir/connect.sh" "$selfdir/restricted.sh" "$selfdir/VERSION"
         if rmdir "$selfdir" 2>/dev/null; then
             echo "Removed $selfdir"
         else
@@ -162,35 +171,59 @@ EOF
     echo ">> Restricted VPN helper installed ($RVPN_HELPER)." >&2
 }
 
-# Pull the latest version. A git checkout updates with `git pull`; an installed
-# copy re-downloads the two scripts from the repo (matching how install.sh fetches).
+# Update to the latest version. A git checkout uses `git pull`; an installed copy
+# first fetches just the tiny VERSION marker and only re-downloads the scripts if
+# the repo's version differs from the installed one.
 do_update() {
     local repo_raw="https://raw.githubusercontent.com/shahaadi/berkeley-vpn/main"
     if [ -d "$HERE/.git" ]; then
         command -v git >/dev/null 2>&1 || { echo "!! git not found." >&2; exit 1; }
-        echo ">> Updating $HERE (git pull) ..."
+        echo ">> Checking for updates in $HERE (git) ..."
+        git -C "$HERE" fetch --quiet || { echo "!! git fetch failed." >&2; exit 1; }
+        local localrev remoterev
+        localrev="$(git -C "$HERE" rev-parse HEAD 2>/dev/null || true)"
+        remoterev="$(git -C "$HERE" rev-parse '@{u}' 2>/dev/null || true)"
+        if [ -n "$localrev" ] && [ "$localrev" = "$remoterev" ]; then
+            echo "$CMD is up to date (version $(read_version))."
+            exit 0
+        fi
         exec git -C "$HERE" pull --ff-only
     fi
     command -v curl >/dev/null 2>&1 || { echo "!! curl not found." >&2; exit 1; }
     [ -f "$HERE/capture.swift" ] || { echo "!! $HERE doesn't look like a berkeley-vpn install." >&2; exit 1; }
-    echo ">> Downloading the latest berkeley-vpn into $HERE ..."
+    echo ">> Checking for updates ..."
     local tmp; tmp="$(mktemp -d)"
-    trap 'rm -rf "$tmp"' EXIT   # clean the temp dir even on Ctrl-C mid-download
-    # Download both to temp first, so a dropped connection can't leave a truncated
-    # script. (The two moves below are sequential rename(2)s on the same volume, so
-    # a partial swap is essentially impossible in practice; a failure is reported.)
+    trap 'rm -rf "$tmp"' EXIT   # clean the temp dir even on Ctrl-C / failure
+    # Cheap check first: fetch only the tiny VERSION marker, not the whole tool.
+    if ! curl -fsSL "$repo_raw/VERSION" -o "$tmp/VERSION"; then
+        echo "!! Could not check for updates (network?)." >&2; exit 1
+    fi
+    local remote_ver local_ver
+    remote_ver="$(tr -d '[:space:]' <"$tmp/VERSION")"
+    if [ -z "$remote_ver" ]; then
+        echo "!! Couldn't read the latest version (empty response)." >&2; exit 1
+    fi
+    local_ver="$(read_version)"
+    if [ "$remote_ver" = "$local_ver" ]; then
+        rm -rf "$tmp"
+        echo "$CMD is up to date (version $local_ver)."
+        exit 0
+    fi
+    # A newer version is available -> download the scripts (and the new VERSION).
+    echo ">> Updating ${local_ver:-?} -> ${remote_ver:-?} ..."
     local f ok=1
-    for f in connect.sh capture.swift; do
+    for f in connect.sh capture.swift VERSION; do
         if ! curl -fsSL "$repo_raw/$f" -o "$tmp/$f"; then echo "!! Failed to download $f." >&2; ok=0; break; fi
     done
     if [ "$ok" = 1 ]; then
-        # Move BOTH or report failure honestly (don't couple chmod with && — under
+        # Move all or report failure honestly (don't couple chmod with && — under
         # set -e a left-of-&& failure is exempt and would falsely report success).
         if mv -f "$tmp/capture.swift" "$HERE/capture.swift" \
-           && mv -f "$tmp/connect.sh" "$HERE/connect.sh"; then
+           && mv -f "$tmp/connect.sh" "$HERE/connect.sh" \
+           && mv -f "$tmp/VERSION" "$HERE/VERSION"; then
             chmod +x "$HERE/connect.sh" 2>/dev/null || true
             rm -rf "$tmp"
-            echo "Updated. Run '$CMD' to use the new version."
+            echo "Updated to version $remote_ver. Run '$CMD' to use the new version."
             exit 0
         fi
         echo "!! Update failed while installing files (the install may be half-updated)." >&2
@@ -231,7 +264,10 @@ do_set() {
 
 # --- Parse the argument: help, a subcommand, or a tunnel name -----------------
 for a in "$@"; do
-    case "$a" in -h|--help) usage; exit 0 ;; esac
+    case "$a" in
+        -h|--help)    usage; exit 0 ;;
+        -v|--version) print_version; exit 0 ;;
+    esac
 done
 # `set` takes its own argument, so handle it before the single-argument rules.
 if [ "${1-}" = "set" ]; then
@@ -248,6 +284,7 @@ if [ $# -eq 0 ]; then ACTION="$(load_default_tunnel)"; else ACTION="$1"; fi
 
 # Subcommands that don't bring up the VPN:
 case "$ACTION" in
+    version)   print_version; exit 0 ;;
     login)     require_swift; echo ">> Opening CalNet login to refresh your session (no VPN connection)…"
                exec swift "$HERE/capture.swift" --login ;;
     logout)    require_swift; exec swift "$HERE/capture.swift" --logout ;;

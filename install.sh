@@ -15,15 +15,16 @@ warn() { printf '!! %s\n' "$*" >&2; }
 
 say ">> Installing berkeley-vpn into $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
-# Download BOTH files to a temp dir first, then move both into place, so a dropped
+# Download the files to a temp dir first, then move them into place, so a dropped
 # connection can't leave a truncated script. The temp dir is cleaned on any exit.
 tmpd="$(mktemp -d)"
 trap 'rm -rf "$tmpd"' EXIT
-for f in capture.swift connect.sh; do
+for f in capture.swift connect.sh VERSION; do
     curl -fsSL "$REPO_RAW/$f" -o "$tmpd/$f" || { warn "download failed: $f"; exit 1; }
 done
 mv -f "$tmpd/capture.swift" "$INSTALL_DIR/capture.swift"
 mv -f "$tmpd/connect.sh"    "$INSTALL_DIR/connect.sh"
+mv -f "$tmpd/VERSION"       "$INSTALL_DIR/VERSION"
 chmod +x "$INSTALL_DIR/connect.sh" 2>/dev/null || true
 
 # Link a `berkeley-vpn` command into the first writable bin dir on PATH.

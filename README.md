@@ -60,17 +60,20 @@ berkeley-vpn --help
 ### Manage your session / install
 
 ```sh
+berkeley-vpn version     # print the installed version (also: berkeley-vpn -v)
 berkeley-vpn set full    # make 'full' your default, so plain `berkeley-vpn` uses it
 berkeley-vpn set         # show the current default (split unless you've changed it)
 berkeley-vpn login       # open the CalNet login to refresh your session (no connect)
 berkeley-vpn logout      # clear the saved CalNet session (forces a fresh login)
-berkeley-vpn update      # update berkeley-vpn to the latest version from the repo
+berkeley-vpn update      # update to the latest version (only downloads if newer)
 berkeley-vpn uninstall   # remove berkeley-vpn (asks to confirm first)
 ```
 
 `set` saves your choice to `~/Library/Application Support/berkeley-vpn/` so running
 `berkeley-vpn` with no argument uses it; pass a tunnel explicitly (e.g. `berkeley-vpn
-split`) to override it for one run.
+split`) to override it for one run. `update` first checks the repo's `VERSION` (a few
+bytes) and only re-downloads the scripts when a newer version exists — otherwise it
+just says you're up to date.
 
 Running it prints a banner showing exactly what it's doing and how to switch:
 
